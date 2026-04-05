@@ -1,37 +1,11 @@
 import streamlit as st
-import pandas as pd
-from transform_nomina import transformar_nomina
-from io import BytesIO
 
-st.set_page_config(page_title="Transformador Nómina", layout="wide")
+st.set_page_config(page_title="Prueba de carga", layout="centered")
 
-st.title("Transformador de Nómina (Exento / Gravado)")
+st.title("Prueba básica de archivo")
 
-archivo = st.file_uploader("Sube tu archivo Excel", type=["xlsx"])
+archivo = st.file_uploader("Sube un archivo Excel", type=["xlsx", "xls"])
 
-if archivo:
-    try:
-        percepciones, deducciones = transformar_nomina(archivo)
-
-        st.success("Archivo procesado correctamente")
-
-        st.subheader("Vista previa - Percepciones")
-        st.dataframe(percepciones.head())
-
-        st.subheader("Vista previa - Deducciones")
-        st.dataframe(deducciones.head())
-
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            percepciones.to_excel(writer, index=False, sheet_name='PERCEPCIONES')
-            deducciones.to_excel(writer, index=False, sheet_name='DEDUCCIONES')
-
-        st.download_button(
-            label="Descargar archivo transformado",
-            data=output.getvalue(),
-            file_name="nomina_transformada.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-    except Exception as e:
-        st.error(f"Error al procesar: {e}")
+if archivo is not None:
+    st.success(f"Archivo recibido: {archivo.name}")
+    st.write(f"Tamaño: {archivo.size} bytes")
