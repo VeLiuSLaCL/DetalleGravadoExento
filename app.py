@@ -1,58 +1,61 @@
-from io import BytesIO
-
+from pathlib import Path
+import io
+import pandas as pd
 import streamlit as st
 
-from transform_nomina import build_output_workbook, load_nomina_dataframe, transform_nomina_dataframe
+from transform_nomina import leer_excel, transformar_bloque, ajustar_hoja_excel, OUTPUT_SHEETS
 
-
-st.set_page_config(page_title="Transformador de Nómina", layout="wide")
+st.set_page_config(page_title="Transformador de nómina", layout="wide")
 st.title("Transformador de nómina")
-st.caption("Convierte conceptos de filas a columnas usando 'Texto expl.CC-nómina' como clave.")
+st.write(
+    "Sube un Excel con la hoja **NOM MAR**. "
+    "El proceso usa la columna **N (CONCEPTO)** para separar en **PERCEPCIONES** y **DEDUCCIONES**, "
+    "toma **S** como nombre del concepto, usa **U** como EXENTO y **V** como GRAVADO, "
+    "y agrega al final **TOTAL_EXENTO** y **TOTAL_GRAVADO**."
+)
 
-with st.sidebar:
-    st.header("Configuración")
-    fixed_cols_count = st.selectbox(
-        "Columnas fijas al inicio",
-        options=[13, 18],
-        index=0,
-        help=(
-            "13 es lo recomendado porque A:M suelen ser los datos estables del recibo. "
-            "18 solo úsalo si quieres forzarlo."
-        ),
-    )
-    source_sheet = st.text_input("Hoja origen", value="NOM MAR")
-    output_sheet = st.text_input("Hoja salida", value="NOM MAR TRANSFORMADA")
+archivo = st.file_uploader("Sube tu archivo Excel", type=["xlsx", "xlsm", "xls"])
 
-uploaded_file = st.file_uploader("Sube tu archivo Excel", type=["xlsx"])
-
-if uploaded_file is not None:
+if archivo is not None:
     try:
-        df_raw = load_nomina_dataframe(BytesIO(uploaded_file.getvalue()), source_sheet=source_sheet)
-        df_preview = transform_nomina_dataframe(df_raw, fixed_cols_count=fixed_cols_count)
+        # guardar temporalmente el upload para relectura segura
+        temp_path = Path("temp_nomina_upload.xlsx")
+        temp_path.write_bytes(archivo.getvalue())
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Filas originales", f"{len(df_raw):,}")
-        c2.metric("Filas transformadas", f"{len(df_preview):,}")
-        c3.metric("Columnas transformadas", f"{df_preview.shape[1]:,}")
+        df_origen = leer_excel(str(temp_path))
+        df_per = transformar_bloque(df_origen, "PERCEPCION")
+        df_ded = transformar_bloque(df_origen, "DEDUCCION")
 
-        st.subheader("Vista previa")
-        st.dataframe(df_preview.head(50), use_container_width=True)
+        st.subheader("Vista rápida del origen")
+        st.dataframe(df_origen.head(20), use_container_width=True)
 
-        excel_bytes = build_output_workbook(
-            input_file_path_or_buffer=BytesIO(uploaded_file.getvalue()),
-            source_sheet=source_sheet,
-            output_sheet=output_sheet,
-            fixed_cols_count=fixed_cols_count,
-        ).getvalue()
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("PERCEPCIONES")
+            st.write(f"Filas: {len(df_per):,} | Columnas: {len(df_per.columns):,}")
+            st.dataframe(df_per.head(20), use_container_width=True)
+
+        with c2:
+            st.subheader("DEDUCCIONES")
+            st.write(f"Filas: {len(df_ded):,} | Columnas: {len(df_ded.columns):,}")
+            st.dataframe(df_ded.head(20), use_container_width=True)
+
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+            df_per.to_excel(writer, sheet_name=OUTPUT_SHEETS["PERCEPCION"], index=False)
+            ajustar_hoja_excel(writer, OUTPUT_SHEETS["PERCEPCION"], df_per)
+
+            df_ded.to_excel(writer, sheet_name=OUTPUT_SHEETS["DEDUCCION"], index=False)
+            ajustar_hoja_excel(writer, OUTPUT_SHEETS["DEDUCCION"], df_ded)
+
+        output.seek(0)
 
         st.download_button(
-            label="Descargar archivo transformado",
-            data=excel_bytes,
-            file_name="nomina_transformada.xlsx",
+            "Descargar archivo transformado",
+            data=output.getvalue(),
+            file_name=f"{Path(archivo.name).stem}_transformado.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
     except Exception as e:
-        st.error(f"Ocurrió un error: {e}")
-else:
-    st.info("Sube un archivo .xlsx para comenzar.")
+        st.error(f"Ocurrió un error al procesar el archivo: {e}")

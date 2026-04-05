@@ -1,30 +1,34 @@
 # Transformador de nómina
 
 ## Qué hace
-- Lee la hoja **NOM MAR**
-- Usa **Texto expl.CC-nómina** como concepto
-- Convierte cada concepto en 2 columnas:
-  - `Concepto Exento` usando la columna **U**
-  - `Concepto Gravado` usando la columna **V**
-- Devuelve 1 fila consolidada por registro de nómina
+- Lee la hoja `NOM MAR`
+- Usa la columna **N = CONCEPTO** para separar en:
+  - `PERCEPCIONES`
+  - `DEDUCCIONES`
+- Usa la columna **S = Texto expl.CC-nómina** como nombre del concepto
+- Convierte conceptos de filas a columnas
+- Para cada concepto crea 2 columnas, en este orden:
+  - `CONCEPTO EXENTO`
+  - `CONCEPTO GRAVADO`
+- Usa:
+  - **U** como exento
+  - **V** como gravado
+- Agrega al final:
+  - `TOTAL_EXENTO`
+  - `TOTAL_GRAVADO`
 
 ## Archivos
-- `transform_nomina.py`: lógica de transformación
 - `app.py`: interfaz en Streamlit
-- `requirements.txt`: dependencias
+- `transform_nomina.py`: proceso por script
+- `requirements.txt`
 
-## Uso local
+## Ejecutar en local
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Uso por script
-Coloca tu archivo como `1.xlsx` en la misma carpeta y ejecuta:
+## Ejecutar por script
 ```bash
-python transform_nomina.py
+python transform_nomina.py archivo.xlsx
 ```
-
-## Nota
-La configuración recomendada es **13 columnas fijas (A:M)**.
-Si quieres forzar otra estructura, cambia `fixed_cols_count`.

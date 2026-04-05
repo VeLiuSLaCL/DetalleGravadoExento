@@ -1,160 +1,194 @@
-from __future__ import annotations
-
-from io import BytesIO
 from pathlib import Path
-
+import sys
 import pandas as pd
 
+SHEET_SOURCE = "NOM MAR"
+BASE_COLUMNS = [
+    "Período cál.nómina",
+    "Año de nómina",
+    "Mes",
+    "Nº de secuencia",
+    "Número de personal",
+    "Sociedad",
+    "Área de nómina",
+    "Tipo de nómina",
+    "Identificador de nómina",
+    "Motivo nóm.especial",
+    "Nº ejecución contabil.",
+    "Estado Impuesto Estatal",
+    "Folio CFDi",
+]
+SPLIT_COLUMN = "CONCEPTO"
+CONCEPT_NAME_COLUMN = "Texto expl.CC-nómina"
+EXENTO_COLUMN = "U"
+GRAVADO_COLUMN = "V"
+OUTPUT_SHEETS = {"PERCEPCION": "PERCEPCIONES", "DEDUCCION": "DEDUCCIONES"}
 
-SOURCE_SHEET = "NOM MAR"
-OUTPUT_SHEET = "NOM MAR TRANSFORMADA"
 
-
-def load_nomina_dataframe(file_path_or_buffer, source_sheet: str = SOURCE_SHEET) -> pd.DataFrame:
-    df = pd.read_excel(file_path_or_buffer, sheet_name=source_sheet, dtype=object)
-    df = df.dropna(how="all").copy()
-    return df
-
-
-def transform_nomina_dataframe(
-    df: pd.DataFrame,
-    fixed_cols_count: int = 13,
-    concept_col: str | None = None,
-    exento_col: str | None = None,
-    gravado_col: str | None = None,
-) -> pd.DataFrame:
-    cols = list(df.columns)
-
-    if len(cols) < 22:
-        raise ValueError("La hoja no tiene la estructura esperada. Se esperaban al menos 22 columnas.")
-
-    # Recomendado: A:M
-    fixed_cols = cols[:fixed_cols_count]
-
-    # Según tu archivo:
-    concept_col = concept_col or cols[18]   # S = Texto expl.CC-nómina
-    exento_col = exento_col or cols[20]     # U = Exento
-    gravado_col = gravado_col or cols[21]   # V = Gravado
-
-    required = fixed_cols + [concept_col, exento_col, gravado_col]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError(f"Faltan columnas requeridas: {missing}")
-
-    work = df.copy()
-    work[concept_col] = work[concept_col].fillna("").astype(str).str.strip()
-    work = work[work[concept_col] != ""].copy()
-
-    work[exento_col] = pd.to_numeric(work[exento_col], errors="coerce").fillna(0)
-    work[gravado_col] = pd.to_numeric(work[gravado_col], errors="coerce").fillna(0)
-
-    concept_order = list(dict.fromkeys(work[concept_col].tolist()))
-    work[concept_col] = pd.Categorical(work[concept_col], categories=concept_order, ordered=True)
-
-    exento_wide = (
-        work.groupby(fixed_cols + [concept_col], dropna=False, observed=True)[exento_col]
-        .sum()
-        .unstack(concept_col, fill_value=0)
-        .reindex(columns=concept_order, fill_value=0)
-    )
-
-    gravado_wide = (
-        work.groupby(fixed_cols + [concept_col], dropna=False, observed=True)[gravado_col]
-        .sum()
-        .unstack(concept_col, fill_value=0)
-        .reindex(columns=concept_order, fill_value=0)
-    )
-
-    base = exento_wide.index.to_frame(index=False).reset_index(drop=True)
-    blocks = [base]
-
-    for concept in concept_order:
-        blocks.append(
-            exento_wide[[concept]]
-            .rename(columns={concept: f"{concept} Exento"})
-            .reset_index(drop=True)
-        )
-        blocks.append(
-            gravado_wide[[concept]]
-            .rename(columns={concept: f"{concept} Gravado"})
-            .reset_index(drop=True)
-        )
-
-    result = pd.concat(blocks, axis=1)
-    result.iloc[:, len(fixed_cols):] = result.iloc[:, len(fixed_cols):].round(2)
+def excel_col_letter(n: int) -> str:
+    result = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        result = chr(65 + rem) + result
     return result
 
 
-def build_output_workbook(
-    input_file_path_or_buffer,
-    output_path: str | Path | None = None,
-    source_sheet: str = SOURCE_SHEET,
-    output_sheet: str = OUTPUT_SHEET,
-    fixed_cols_count: int = 13,
-) -> BytesIO:
-    df_raw = load_nomina_dataframe(input_file_path_or_buffer, source_sheet=source_sheet)
-    df_out = transform_nomina_dataframe(df_raw, fixed_cols_count=fixed_cols_count)
-
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        df_out.to_excel(writer, sheet_name=output_sheet, index=False)
-
-        workbook = writer.book
-        worksheet = writer.sheets[output_sheet]
-
-        header_fmt = workbook.add_format({"bold": True, "bg_color": "#D9EAF7"})
-        money_fmt = workbook.add_format({"num_format": "#,##0.00"})
-        text_fmt = workbook.add_format({"num_format": "@"})
-
-        rows, cols = df_out.shape
-        worksheet.freeze_panes(1, 0)
-        worksheet.autofilter(0, 0, rows, cols - 1)
-
-        for col_idx, col_name in enumerate(df_out.columns):
-            sample = df_out.iloc[:200, col_idx].fillna("").astype(str).tolist()
-            max_len = max([len(str(col_name))] + [len(v) for v in sample])
-            width = min(max(max_len + 2, 12), 28)
-
-            fmt = money_fmt if col_idx >= fixed_cols_count else None
-            worksheet.set_column(col_idx, col_idx, width, fmt)
-            worksheet.write(0, col_idx, col_name, header_fmt)
-
-        for name in ["Número de personal", "Folio CFDi", "UUID"]:
-            if name in df_out.columns:
-                idx = df_out.columns.get_loc(name)
-                worksheet.set_column(idx, idx, 18, text_fmt)
-
-    buffer.seek(0)
-
-    if output_path:
-        Path(output_path).write_bytes(buffer.getvalue())
-
-    return buffer
+def normalizar_texto(valor) -> str:
+    if pd.isna(valor):
+        return ""
+    texto = str(valor).strip()
+    texto = " ".join(texto.split())
+    return texto.upper()
 
 
-def transform_file(
-    input_path: str | Path,
-    output_path: str | Path,
-    source_sheet: str = SOURCE_SHEET,
-    output_sheet: str = OUTPUT_SHEET,
-    fixed_cols_count: int = 13,
-) -> Path:
-    build_output_workbook(
-        input_file_path_or_buffer=input_path,
-        output_path=output_path,
-        source_sheet=source_sheet,
-        output_sheet=output_sheet,
-        fixed_cols_count=fixed_cols_count,
+def safe_numeric(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(series, errors="coerce").fillna(0.0)
+
+
+def leer_excel(path_archivo: str) -> pd.DataFrame:
+    df = pd.read_excel(path_archivo, sheet_name=SHEET_SOURCE, dtype=object)
+
+    # Limpiar encabezados
+    nuevas_cols = []
+    for idx, col in enumerate(df.columns, start=1):
+        nuevas_cols.append(f"COL_{idx}" if pd.isna(col) else str(col).strip())
+    df.columns = nuevas_cols
+
+    # Forzar que U y V sean accesibles por letra de Excel
+    renombres = {}
+    for idx, col in enumerate(df.columns, start=1):
+        letra = excel_col_letter(idx)
+        if letra == "U":
+            renombres[col] = "U"
+        elif letra == "V":
+            renombres[col] = "V"
+    df = df.rename(columns=renombres)
+
+    requeridas = BASE_COLUMNS + [SPLIT_COLUMN, CONCEPT_NAME_COLUMN, EXENTO_COLUMN, GRAVADO_COLUMN]
+    faltantes = [c for c in requeridas if c not in df.columns]
+    if faltantes:
+        raise ValueError(f"Faltan columnas requeridas: {', '.join(faltantes)}")
+
+    return df
+
+
+def transformar_bloque(df: pd.DataFrame, tipo_concepto: str) -> pd.DataFrame:
+    bloque = df[df[SPLIT_COLUMN].astype(str).str.upper().str.strip() == tipo_concepto].copy()
+
+    if bloque.empty:
+        return pd.DataFrame(columns=BASE_COLUMNS + ["TOTAL_EXENTO", "TOTAL_GRAVADO"])
+
+    bloque[CONCEPT_NAME_COLUMN] = bloque[CONCEPT_NAME_COLUMN].apply(normalizar_texto)
+    bloque[EXENTO_COLUMN] = safe_numeric(bloque[EXENTO_COLUMN])
+    bloque[GRAVADO_COLUMN] = safe_numeric(bloque[GRAVADO_COLUMN])
+
+    for c in BASE_COLUMNS:
+        bloque[c] = bloque[c].fillna("").astype(str).str.strip()
+
+    pivot_exento = pd.pivot_table(
+        bloque,
+        index=BASE_COLUMNS,
+        columns=CONCEPT_NAME_COLUMN,
+        values=EXENTO_COLUMN,
+        aggfunc="sum",
+        fill_value=0,
     )
-    return Path(output_path)
+    pivot_gravado = pd.pivot_table(
+        bloque,
+        index=BASE_COLUMNS,
+        columns=CONCEPT_NAME_COLUMN,
+        values=GRAVADO_COLUMN,
+        aggfunc="sum",
+        fill_value=0,
+    )
+
+    conceptos = sorted(set(pivot_exento.columns.tolist()) | set(pivot_gravado.columns.tolist()))
+    base_index = pivot_exento.index if len(pivot_exento.index) else pivot_gravado.index
+
+    piezas = []
+    for concepto in conceptos:
+        if concepto in pivot_exento.columns:
+            ex_df = pivot_exento[[concepto]].rename(columns={concepto: f"{concepto} EXENTO"})
+        else:
+            ex_df = pd.DataFrame({f"{concepto} EXENTO": 0}, index=base_index)
+
+        if concepto in pivot_gravado.columns:
+            gr_df = pivot_gravado[[concepto]].rename(columns={concepto: f"{concepto} GRAVADO"})
+        else:
+            gr_df = pd.DataFrame({f"{concepto} GRAVADO": 0}, index=base_index)
+
+        piezas.append(ex_df)
+        piezas.append(gr_df)
+
+    resultado = pd.concat(piezas, axis=1).reset_index() if piezas else pd.DataFrame(columns=BASE_COLUMNS)
+
+    dynamic_cols = []
+    for concepto in conceptos:
+        dynamic_cols.append(f"{concepto} EXENTO")
+        dynamic_cols.append(f"{concepto} GRAVADO")
+
+    exento_cols = [c for c in dynamic_cols if c.endswith(" EXENTO") and c in resultado.columns]
+    gravado_cols = [c for c in dynamic_cols if c.endswith(" GRAVADO") and c in resultado.columns]
+
+    resultado["TOTAL_EXENTO"] = resultado[exento_cols].sum(axis=1) if exento_cols else 0.0
+    resultado["TOTAL_GRAVADO"] = resultado[gravado_cols].sum(axis=1) if gravado_cols else 0.0
+
+    ordered_cols = BASE_COLUMNS + [c for c in dynamic_cols if c in resultado.columns] + ["TOTAL_EXENTO", "TOTAL_GRAVADO"]
+    return resultado[ordered_cols]
+
+
+def ajustar_hoja_excel(writer, sheet_name: str, df: pd.DataFrame):
+    workbook = writer.book
+    worksheet = writer.sheets[sheet_name]
+
+    header_fmt = workbook.add_format({
+        "bold": True,
+        "text_wrap": True,
+        "valign": "vcenter",
+        "fg_color": "#D9EAF7",
+        "border": 1,
+    })
+    money_fmt = workbook.add_format({"num_format": "#,##0.00"})
+    text_fmt = workbook.add_format({"num_format": "@"})
+
+    worksheet.freeze_panes(1, 0)
+    worksheet.autofilter(0, 0, len(df), len(df.columns) - 1)
+
+    for col_idx, col_name in enumerate(df.columns):
+        worksheet.write(0, col_idx, col_name, header_fmt)
+        sample = df[col_name].head(500).fillna("").astype(str).tolist() if len(df) else []
+        max_len = max([len(str(col_name))] + [len(x) for x in sample]) if sample else len(str(col_name))
+        width = min(max(max_len + 2, 12), 35)
+
+        if col_name.endswith(" EXENTO") or col_name.endswith(" GRAVADO") or col_name.startswith("TOTAL_"):
+            worksheet.set_column(col_idx, col_idx, max(width, 14), money_fmt)
+        elif col_name in ["Período cál.nómina", "Año de nómina", "Mes", "Nº de secuencia", "Número de personal"]:
+            worksheet.set_column(col_idx, col_idx, max(width, 12), text_fmt)
+        else:
+            worksheet.set_column(col_idx, col_idx, width)
+
+
+def transformar_archivo(path_entrada: str, path_salida: str):
+    df = leer_excel(path_entrada)
+    percepciones = transformar_bloque(df, "PERCEPCION")
+    deducciones = transformar_bloque(df, "DEDUCCION")
+
+    with pd.ExcelWriter(path_salida, engine="xlsxwriter") as writer:
+        percepciones.to_excel(writer, sheet_name=OUTPUT_SHEETS["PERCEPCION"], index=False)
+        ajustar_hoja_excel(writer, OUTPUT_SHEETS["PERCEPCION"], percepciones)
+
+        deducciones.to_excel(writer, sheet_name=OUTPUT_SHEETS["DEDUCCION"], index=False)
+        ajustar_hoja_excel(writer, OUTPUT_SHEETS["DEDUCCION"], deducciones)
+
+    return path_salida
 
 
 if __name__ == "__main__":
-    input_file = Path("1.xlsx")
-    output_file = Path("1_transformado.xlsx")
+    if len(sys.argv) < 2:
+        print("Uso: python transform_nomina.py archivo_entrada.xlsx [archivo_salida.xlsx]")
+        sys.exit(1)
 
-    if not input_file.exists():
-        raise SystemExit("No encontré 1.xlsx en la carpeta actual.")
-
-    transform_file(input_file, output_file, fixed_cols_count=13)
-    print(f"Archivo generado: {output_file}")
+    entrada = sys.argv[1]
+    salida = sys.argv[2] if len(sys.argv) >= 3 else str(Path(entrada).with_name(f"{Path(entrada).stem}_transformado.xlsx"))
+    transformar_archivo(entrada, salida)
+    print(f"Archivo generado: {salida}")
